@@ -22,10 +22,10 @@ set.seed(102182)
 # Model performance according to OOB metrics for ranger
 data(iris)
 rang.class <- ranger(Species ~ ., data = iris)
-cat("Classification Error:",rang$prediction.error,"\n")
+cat("Classification Error:",rang.class$prediction.error,"\n")
 
 rang.prob <- ranger(Species ~ ., data = iris,probability = T)
-cat("Brier's Score:",round(rang$prediction.error,2),"\n")
+cat("Brier's Score:",round(rang.prob$prediction.error,2),"\n")
 
 
 
