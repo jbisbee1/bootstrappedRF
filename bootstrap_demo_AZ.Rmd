@@ -1,0 +1,196 @@
+---
+title: 'Bootstrap Demo: Random Forests'
+author: "Junlong Aaron Zhou"
+date: "3/19/2020"
+output: 
+  html_notebook: default
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  echo = TRUE,
+  comment = "#>"
+)
+  options(java.parameters = "-Xmx2000m") # restart R to take effect
+  # check memory allocated to Java VM
+  options("java.parameters")
+rm(list = ls())
+gc()
+Sys.sleep(1)
+```
+
+```{r load, message=FALSE, warning=FALSE}
+require(dplyr)
+require(ranger)
+require(pROC)
+require(ggplot2)
+require(ggridges)
+require(bartMachine)
+require(grf)
+set.seed(102182)
+```
+
+## Data Setup
+
+Using the same simulation as Jim's.
+```{r, cache=TRUE}
+
+# Simulated data
+n = 2000; p = 10
+X = matrix(rnorm(n*p), n, p)
+W = rbinom(n, 1, 0.5) 
+Y = pmax(X[,1], 0) * W + X[,2] + pmin(X[,3], 0) + rnorm(n)
+```
+
+## Bootstrap Simulation
+
+Now, here presents Jim's simulation results. Note for bootstrap without replacement, Jim's choice is to sample 60% of sample.
+
+```{r Jim_boot, echo=TRUE, warning=FALSE, cache=TRUE,message=FALSE}
+
+perf.bs <- NULL
+for(i in 1:50) {
+  # replace = T
+  inds <- sample(1:nrow(X),nrow(X),replace = T)
+  rang.bsT <- ranger(Y ~., data = data.frame(X[inds,],Y = Y[inds]))
+  bart.bsT <- bartMachine(X = data.frame(X[inds,]),y = Y[inds],verbose = F)
+  grf.bsT <- regression_forest(X = X[inds,],Y = Y[inds])
+  grf.bsT.err <- sqrt(mean((Y[inds] - predict(grf.bsT)$predictions)^2))
+  
+  # replace = F
+  inds <- sample(1:nrow(X),round(nrow(X)*.6),replace = F)
+  rang.bsF <- ranger(Y ~., data = data.frame(X[inds,],Y = Y[inds]))
+  bart.bsF <- bartMachine(X = data.frame(X[inds,]),y = Y[inds],verbose = F)
+  grf.bsF <- regression_forest(X = X[inds,],Y = Y[inds])
+  grf.bsF.err <- sqrt(mean((Y[inds] - predict(grf.bsF)$predictions)^2))
+  
+  perf.bs <- bind_rows(perf.bs,
+                       data.frame(err = c(sqrt(rang.bsT$prediction.error),
+                                          sqrt(rang.bsF$prediction.error)),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "ranger"),
+                       data.frame(err = c(bart.bsT$rmse_train,bart.bsF$rmse_train),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "bartMachine"),
+                       data.frame(err = c(grf.bsT.err,grf.bsF.err),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "grf"))
+  #cat(i,"\n")
+}
+
+perf.bs %>% 
+  ggplot(aes(x = err,y = bsType,fill = meth)) +
+  geom_density_ridges(scale = 2,rel_min_height = .001,alpha = .5) +
+  theme_ridges() + ylab("") + xlab("")
+
+```
+
+There is a difference. However, it could due to 2 reasons: 1. the bootstrapped sample, $\hat{F}^*$, does not provide an approximation to the original emprical process $\hat{F}$, therfore, $\hat{F}^*$ is even far from the true distribution $F$. Or 2, it is just because for each model, you have less observations,hence lose information.
+
+Now, I follow the pseudo-population procedure: replicating the sample 20 times, and sample the same number as the original sample (So 5% of the extended sample).
+
+
+Note the idea of pseudo population bootstrap is: consider we have population size $N$, and our sample size is $n$. We extend our sample to $N$ by replicating our sample by $\lfloor \frac{N}{n} \rfloor$ times
+
+```{r Aaron_boot, echo=TRUE, warning=FALSE, cache=TRUE,message=FALSE}
+
+X_b <- do.call("rbind", rep(list(X), 20))
+Y_b <- rep(Y, 20)
+
+perf.bs <- NULL
+for(i in 1:50) {
+  # replace = T
+  inds <- sample(1:nrow(X),nrow(X),replace = T)
+  rang.bsT <- ranger(Y ~., data = data.frame(X[inds,],Y = Y[inds]))
+  bart.bsT <- bartMachine(X = data.frame(X[inds,]),y = Y[inds],verbose = F)
+  grf.bsT <- regression_forest(X = X[inds,],Y = Y[inds])
+  grf.bsT.err <- sqrt(mean((Y[inds] - predict(grf.bsT)$predictions)^2))
+  
+  # replace = F
+  inds <- sample(1:nrow(X_b),nrow(X),replace = F)
+  rang.bsF <- ranger(Y ~., data = data.frame(X_b[inds,],Y = Y_b[inds]))
+  bart.bsF <- bartMachine(X = data.frame(X_b[inds,]),y = Y_b[inds],verbose = F)
+  grf.bsF <- regression_forest(X = X_b[inds,],Y = Y_b[inds])
+  grf.bsF.err <- sqrt(mean((Y_b[inds] - predict(grf.bsF)$predictions)^2))
+  
+  perf.bs <- bind_rows(perf.bs,
+                       data.frame(err = c(sqrt(rang.bsT$prediction.error),
+                                          sqrt(rang.bsF$prediction.error)),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "ranger"),
+                       data.frame(err = c(bart.bsT$rmse_train,bart.bsF$rmse_train),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "bartMachine"),
+                       data.frame(err = c(grf.bsT.err,grf.bsF.err),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "grf"))
+}
+
+perf.bs %>% 
+  ggplot(aes(x = err,y = bsType,fill = meth)) +
+  geom_density_ridges(scale = 2,rel_min_height = .001,alpha = .5) +
+  theme_ridges() + ylab("") + xlab("")
+
+```
+
+Note I try replicating 10 times before, it does not work well. But when I try 20 times, it works. Also, I didn't consider the case that when $\frac{N}{n}$ is not an integer in which case we need to consider fill-in strategy (how to pick $s$ observation so that $n* \lfloor \frac{N}{n} \rfloor +s =N$). 
+
+There are some bootrap scheme I haven't try. For example, bootstrap via reweighting, and bag of a little bootstrap. Nevertheless, I think they should be similar when $B\to \infty$. 
+
+
+## Out-bag Performance
+
+Now the question is why grf has the worst in-sample performance. I guess it is because the honesty inferene here, so prevent overfitting. Now we can check out-of-bag performance by spliting the data into train set and test set first.
+
+```{r Aaron_boot_oob, echo=TRUE, warning=FALSE, cache=TRUE,message=FALSE}
+
+test_index <- sample(1:nrow(X), size= round(nrow(X)*0.2), replace = F)
+
+X_tr <- X[-test_index,]
+Y_tr <- Y[-test_index]
+
+X_te <- X[test_index,]
+Y_te <- Y[test_index]
+
+X_b <- do.call("rbind", rep(list(X_tr), 20))
+Y_b <- rep(Y_tr, 20)
+
+perf.bs <- NULL
+for(i in 1:50) {
+  # replace = T
+  inds <- sample(1:nrow(X_tr),nrow(X_tr),replace = T)
+  rang.bsT <- ranger(Y ~., data = data.frame(X_tr[inds,],Y = Y_tr[inds]))
+  rang.bsT.err <- sqrt(mean((Y_te - predict(rang.bsT, data = data.frame(X_te,Y = Y_te))$predictions)^2))
+  bart.bsT <- bartMachine(X = data.frame(X_tr[inds,]),y = Y_tr[inds],verbose = F)
+  bart.bsT.err <- sqrt(mean((Y_te - predict(bart.bsT, new_data = data.frame(X_te)))^2))
+  grf.bsT <- regression_forest(X = X_tr[inds,],Y = Y_tr[inds])
+  grf.bsT.err <- sqrt(mean((Y_te - predict(grf.bsT, newdata = data.frame(X_te))$predictions)^2))
+  
+  # replace = F
+  inds <- sample(1:nrow(X_b),nrow(X_tr),replace = F)
+  rang.bsF <- ranger(Y ~., data = data.frame(X_b[inds,],Y = Y_b[inds]))
+  rang.bsF.err <- sqrt(mean((Y_te - predict(rang.bsF, data = data.frame(X_te,Y = Y_te))$predictions)^2))
+  bart.bsF <- bartMachine(X = data.frame(X_b[inds,]),y = Y_b[inds],verbose = F)
+  bart.bsF.err <- sqrt(mean((Y_te - predict(bart.bsF, new_data = data.frame(X_te)))^2))
+  grf.bsF <- regression_forest(X = X_b[inds,],Y = Y_b[inds])
+  grf.bsF.err <- sqrt(mean((Y_te - predict(grf.bsF, newdata = data.frame(X_te))$predictions)^2))
+  
+  perf.bs <- bind_rows(perf.bs,
+                       data.frame(err = c(rang.bsT.err, rang.bsF.err),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "ranger"),
+                       data.frame(err = c(bart.bsT.err,bart.bsF.err),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "bartMachine"),
+                       data.frame(err = c(grf.bsT.err,grf.bsF.err),
+                                  bsType = c("replace=T","replace=F"),
+                                  meth = "grf"))
+}
+
+perf.bs %>% 
+  ggplot(aes(x = err,y = bsType,fill = meth)) +
+  geom_density_ridges(scale = 2,rel_min_height = .001,alpha = .5) +
+  theme_ridges() + ylab("") + xlab("")
+
+```
